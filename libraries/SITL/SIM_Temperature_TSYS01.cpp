@@ -1,3 +1,7 @@
+#include "SIM_config.h"
+
+#if AP_SIM_TEMPERATURE_TSYS01_ENABLED
+
 #include "SIM_Temperature_TSYS01.h"
 
 #include <stdio.h>
@@ -175,9 +179,10 @@ void SITL::TSYS01::update(const class Aircraft &aircraft)
         break;
     case State::CONVERTING:
         if (time_in_state_ms() > 5) {
-            if (!is_equal(last_temperature, some_temperature)) {
-                last_temperature = some_temperature;
-                adc = calculate_adc(some_temperature);
+            const float temperature = get_sim_temperature();
+            if (!is_equal(last_temperature, temperature)) {
+                last_temperature = temperature;
+                adc = calculate_adc(temperature);
             }
             set_state(State::CONVERTED);
         }
@@ -187,3 +192,13 @@ void SITL::TSYS01::update(const class Aircraft &aircraft)
     }
 }
 
+float SITL::TSYS01::get_sim_temperature() const
+{
+    float sim_alt = AP::sitl()->state.altitude;
+    sim_alt += 2 * rand_float();
+
+    // To Do: Add a sensor board temperature offset parameter
+    return AP_Baro::get_temperatureC_for_alt_amsl(sim_alt) + 25;
+}
+
+#endif  // AP_SIM_TEMPERATURE_TSYS01_ENABLED

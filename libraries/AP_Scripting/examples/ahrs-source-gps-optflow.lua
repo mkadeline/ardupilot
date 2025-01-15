@@ -2,9 +2,9 @@
 -- this script is intended to help vehicles automatically switch between GPS and optical flow
 --
 -- configure a forward or downward facing lidar with a range of at least 5m
--- setup RCx_OPTION = 90 (EKF Pos Source) to select the source (low=GPS, middle=opticalflow, high=Not Used)
+-- setup RCx_OPTION = 90 (EKF Source Set) to select the source (low=GPS, middle=opticalflow, high=Not Used)
 -- setup RCx_OPTION = 300 (Scripting1).  When this switch is pulled high, the source will be automatically selected
--- SRC_ENABLE = 1 (enable scripting)
+-- SCR_ENABLE = 1 (enable scripting)
 -- setup EK3_SRCn_ parameters so that GPS is the primary source, opticalflow is secondary.
 --     EK3_SRC1_POSXY = 3 (GPS)
 --     EK3_SRC1_VELXY = 3 (GPS)
@@ -16,7 +16,7 @@
 --     EK3_SRC2_VELZ  = 0 (None)
 --     EK3_SRC2_POSZ  = 1 (Baro)
 --     EK3_SRC2_YAW   = 1 (Compass)
---     EK3_OPTIONS    = 0 (Do not fuse all velocities)
+--     EK3_SRC_OPTIONS    = 0 (Do not fuse all velocities)
 --
 -- SCR_USER1 holds the threshold (in meters) for rangefinder altitude (around 15 is a good choice)
 --     if rangefinder distance >= SCR_USER1, source1 (GPS) will be used
@@ -26,25 +26,22 @@
 -- SCR_USER4 holds the threshold for optical flow innovations (about 0.15 is a good choice)
 --
 -- When the 2nd auxiliary switch (300/Scripting1) is pulled high automatic source selection uses these thresholds:
+---@diagnostic disable: need-check-nil
 
 local rangefinder_rotation = 25     -- check downward (25) facing lidar
 local source_prev = 0               -- previous source, defaults to primary source
-local sw_source_prev = -1           -- previous source switch position
 local sw_auto_pos_prev = -1         -- previous auto source switch position
 local auto_switch = false           -- true when auto switching between sources is active
 local gps_usable_accuracy = 1.0     -- GPS is usable if speed accuracy is at or below this value
 local vote_counter_max = 20         -- when a vote counter reaches this number (i.e. 2sec) source may be switched
 local gps_vs_opticalflow_vote = 0   -- vote counter for GPS vs optical (-20 = GPS, +20 = optical flow)
-local scr_user1_param = Parameter() -- user1 param (rangefinder altitude threshold)
-local scr_user2_param = Parameter() -- user2 param (GPS speed accuracy threshold)
-local scr_user3_param = Parameter() -- user3 param (optical flow quality threshold)
-local scr_user4_param = Parameter() -- user4 param (optical flow innovation threshold)
 
 -- initialise parameters
-assert(scr_user1_param:init('SCR_USER1'), 'could not find SCR_USER1 parameter')
-assert(scr_user2_param:init('SCR_USER2'), 'could not find SCR_USER2 parameter')
-assert(scr_user3_param:init('SCR_USER3'), 'could not find SCR_USER3 parameter')
-assert(scr_user4_param:init('SCR_USER4'), 'could not find SCR_USER4 parameter')
+local scr_user1_param = Parameter('SCR_USER1') -- user1 param (rangefinder altitude threshold)
+local scr_user2_param = Parameter('SCR_USER2') -- user2 param (GPS speed accuracy threshold)
+local scr_user3_param = Parameter('SCR_USER3') -- user3 param (optical flow quality threshold)
+local scr_user4_param = Parameter('SCR_USER4') -- user4 param (optical flow innovation threshold)
+
 assert(optical_flow, 'could not access optical flow')
 
 -- play tune on buzzer to alert user to change in active source set
@@ -115,12 +112,9 @@ function update()
 
   -- get opticalflow innovations from ahrs (only x and y values are valid)
   local opticalflow_over_threshold = true
-  local opticalflow_xy_innov = 0
-  local opticalflow_innov = Vector3f()
-  local opticalflow_var = Vector3f()
-  opticalflow_innov, opticalflow_var = ahrs:get_vel_innovations_and_variances_for_source(5)
+  local opticalflow_innov = ahrs:get_vel_innovations_and_variances_for_source(5)
   if (opticalflow_innov) then
-    opticalflow_xy_innov = math.sqrt(opticalflow_innov:x() * opticalflow_innov:x() + opticalflow_innov:y() * opticalflow_innov:y())
+    local opticalflow_xy_innov = math.sqrt(opticalflow_innov:x() * opticalflow_innov:x() + opticalflow_innov:y() * opticalflow_innov:y())
     opticalflow_over_threshold = (opticalflow_xy_innov == 0.0) or (opticalflow_xy_innov > opticalflow_innov_thresh)
   end
 

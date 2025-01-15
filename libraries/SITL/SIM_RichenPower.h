@@ -15,7 +15,7 @@
 /*
   Simulator for the RichenPower Hybrid generators
 
-./Tools/autotest/sim_vehicle.py --gdb --debug -v ArduCopter -A --uartF=sim:richenpower --speedup=1 --console
+./Tools/autotest/sim_vehicle.py --gdb --debug -v ArduCopter -A --serial5=sim:richenpower --speedup=1 --console
 
 param set SERIAL5_PROTOCOL 30
 param set SERIAL5_BAUD 9600
@@ -45,6 +45,7 @@ arm throttle (denied because generator not running)
 #include "SITL_Input.h"
 
 #include "SIM_SerialDevice.h"
+#include "SIM_GeneratorEngine.h"
 
 namespace SITL {
 
@@ -71,8 +72,6 @@ private:
 // So we set batt fs high 46s
 // Gennie keeps batts charged to 49v + typically
 
-    class SIM *_sitl;
-
     uint32_t last_sent_ms;
 
     void update_control_pin(const struct sitl_input &input);
@@ -96,7 +95,9 @@ private:
 
     float _current_current;
 
-    uint32_t last_rpm_update_ms;
+    enum class Errors {
+        MaintenanceRequired = 0,
+    };
 
     // packet to send:
     struct PACKED RichenPacket {
@@ -122,7 +123,6 @@ private:
         uint8_t footermagic1;
         uint8_t footermagic2;
     };
-    assert_storage_size<RichenPacket, 70> _assert_storage_size_RichenPacket;
 
     union RichenUnion {
         uint8_t parse_buffer[70];
@@ -135,6 +135,8 @@ private:
 
     // time we were asked to stop; 
     uint32_t stop_start_ms;
+
+    SIM_GeneratorEngine generatorengine;
 };
 
 }

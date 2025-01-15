@@ -73,7 +73,7 @@ int SPIBus::_ioctl(uint8_t cs_pin, uint8_t ioctl_number, void *data)
 AP_HAL::Device::PeriodicHandle SPIBus::register_periodic_callback(uint32_t period_usec, AP_HAL::Device::PeriodicCb cb)
 {
     // mostly swiped from ChibiOS:
-    SPIBus::callback_info *callback = new SPIBus::callback_info;
+    SPIBus::callback_info *callback = NEW_NOTHROW SPIBus::callback_info;
     if (callback == nullptr) {
         return nullptr;
     }
@@ -106,9 +106,6 @@ SPIBus *SPIDeviceManager::buses;
 
 SPIDeviceManager::SPIDeviceManager()
 {
-    for (uint8_t i=0; i<ARRAY_SIZE(buses); i++) {
-        buses[i].bus = i;
-    }
 }
 
 static const struct SPIDriverInfo {
@@ -123,6 +120,7 @@ static const struct SPIDriverInfo {
 // name, bus, cs_pin
 SPIDesc SPIDeviceManager::device_table[] = {
     { "ramtron", 0, 0 },
+    { "dataflash", 1, 0}
 };
 
 AP_HAL::OwnPtr<AP_HAL::SPIDevice>
@@ -152,7 +150,7 @@ SPIDeviceManager::get_device(const char *name)
     }
     if (busp == nullptr) {
         // create a new one
-        busp = new SPIBus(desc.bus);
+        busp = NEW_NOTHROW SPIBus(desc.bus);
         if (busp == nullptr) {
             return nullptr;
         }
@@ -162,7 +160,7 @@ SPIDeviceManager::get_device(const char *name)
         buses = busp;
     }
 
-    return AP_HAL::OwnPtr<AP_HAL::SPIDevice>(new SPIDevice(*busp, desc));
+    return AP_HAL::OwnPtr<AP_HAL::SPIDevice>(NEW_NOTHROW SPIDevice(*busp, desc));
 }
 
 // void SPIDeviceManager::_timer_tick()

@@ -25,6 +25,10 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Logger/AP_Logger.h>
 #include <AP_Math/AP_Math.h>
+#include <AC_PID/AC_PID.h>
+#include <AP_Scheduler/AP_Scheduler.h>
+#include <GCS_MAVLink/GCS.h>
+#include <AP_InertialSensor/AP_InertialSensor.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -44,7 +48,7 @@ extern const AP_HAL::HAL& hal;
 
 // constructor
 AP_AutoTune::AP_AutoTune(ATGains &_gains, ATType _type,
-                         const AP_Vehicle::FixedWing &parms,
+                         const AP_FixedWing &parms,
                          AC_PID &_rpid) :
     current(_gains),
     rpid(_rpid),
@@ -57,7 +61,7 @@ AP_AutoTune::AP_AutoTune(ATGains &_gains, ATType _type,
 #include <stdio.h>
 # define Debug(fmt, args ...)  do {::printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ## args); } while(0)
 #else
- # define Debug(fmt, args ...)
+# define Debug(fmt, args ...)
 #endif
 
 /*
@@ -147,10 +151,23 @@ void AP_AutoTune::stop(void)
     }
 }
 
+const char *AP_AutoTune::axis_string(void) const
+{
+    switch (type) {
+    case AUTOTUNE_ROLL:
+        return "Roll";
+    case AUTOTUNE_PITCH:
+        return "Pitch";
+    case AUTOTUNE_YAW:
+        return "Yaw";
+    }
+    return "";
+}
+
 /*
   one update cycle of the autotuner
  */
-void AP_AutoTune::update(AP_Logger::PID_Info &pinfo, float scaler, float angle_err_deg)
+void AP_AutoTune::update(AP_PIDInfo &pinfo, float scaler, float angle_err_deg)
 {
     if (!running) {
         return;
@@ -163,7 +180,7 @@ void AP_AutoTune::update(AP_Logger::PID_Info &pinfo, float scaler, float angle_e
     // filter actuator without I term so we can take ratios without
     // accounting for trim offsets. We first need to include the I and
     // clip to 45 degrees to get the right value of the real surface
-    const float clipped_actuator = constrain_float(pinfo.FF + pinfo.P + pinfo.D + pinfo.I, -45, 45) - pinfo.I;
+    const float clipped_actuator = constrain_float(pinfo.FF + pinfo.P + pinfo.D + pinfo.DFF + pinfo.I, -45, 45) - pinfo.I;
     const float actuator = actuator_filter.apply(clipped_actuator);
     const float actual_rate = rate_filter.apply(pinfo.actual);
 
@@ -189,12 +206,20 @@ void AP_AutoTune::update(AP_Logger::PID_Info &pinfo, float scaler, float angle_e
     max_SRate_P = MAX(max_SRate_P, slew_limiter_P.get_slew_rate());
     max_SRate_D = MAX(max_SRate_D, slew_limiter_D.get_slew_rate());
 
-    float att_limit_deg;
-    if (type == AUTOTUNE_ROLL) {
-        att_limit_deg = aparm.roll_limit_cd * 0.01;
-    } else {
-        att_limit_deg = MIN(abs(aparm.pitch_limit_max_cd),abs(aparm.pitch_limit_min_cd))*0.01;
+    float att_limit_deg = 0;
+    switch (type) {
+    case AUTOTUNE_ROLL:
+        att_limit_deg = aparm.roll_limit;
+        break;
+    case AUTOTUNE_PITCH:
+        att_limit_deg = MIN(abs(aparm.pitch_limit_max*100),abs(aparm.pitch_limit_min*100))*0.01;
+        break;
+    case AUTOTUNE_YAW:
+        // arbitrary value for yaw angle
+        att_limit_deg = 20;
+        break;
     }
+
 
     // thresholds for when we consider an event to start and end
     const float rate_threshold1 = 0.4 * MIN(att_limit_deg / current.tau.get(), current.rmax_pos);
@@ -223,9 +248,10 @@ void AP_AutoTune::update(AP_Logger::PID_Info &pinfo, float scaler, float angle_e
 
     const uint32_t now = AP_HAL::millis();
 
+#if HAL_LOGGING_ENABLED
     if (now - last_log_ms >= 40) {
         // log at 25Hz
-        struct log_ATRP pkt = {
+        const struct log_ATRP pkt {
             LOG_PACKET_HEADER_INIT(LOG_ATRP_MSG),
             time_us : AP_HAL::micros64(),
             type : uint8_t(type),
@@ -245,6 +271,7 @@ void AP_AutoTune::update(AP_Logger::PID_Info &pinfo, float scaler, float angle_e
         AP::logger().WriteBlock(&pkt, sizeof(pkt));
         last_log_ms = now;
     }
+#endif
 
     if (new_state == state) {
         if (state == ATState::IDLE &&
@@ -337,7 +364,7 @@ void AP_AutoTune::update(AP_Logger::PID_Info &pinfo, float scaler, float angle_e
             D_limit = D;
             D_set_ms = now;
             action = Action::LOWER_D;
-            GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%sD: %.4f", type==AUTOTUNE_ROLL?"Roll":"Pitch", D_limit);            
+            GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%sD: %.4f", axis_string(), D_limit);
         }
     } else if (min_Dmod < 1.0) {
         // oscillation, with D_limit set
@@ -349,20 +376,28 @@ void AP_AutoTune::update(AP_Logger::PID_Info &pinfo, float scaler, float angle_e
                 D_limit = D;
                 D_set_ms = now;
                 action = Action::LOWER_D;
-                GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%sD: %.4f", type==AUTOTUNE_ROLL?"Roll":"Pitch", D_limit);
+                GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%sD: %.4f", axis_string(), D_limit);
                 done_count = 0;
-            } else if (now - P_set_ms > 2000) {
-                P *= 0.35;
+            } else if (now - P_set_ms > 2500) {
+                if (is_positive(P_limit)) {
+                    // if we've already got a P estimate then don't
+                    // reduce as quickly, stopping small spikes at the
+                    // later part of the tune from giving us a very
+                    // low P gain
+                    P *= 0.7;
+                } else {
+                    P *= 0.35;
+                }
                 P_limit = P;
                 P_set_ms = now;
                 action = Action::LOWER_P;
                 done_count = 0;
-                GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%sP: %.4f", type==AUTOTUNE_ROLL?"Roll":"Pitch", P_limit);
+                GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%sP: %.4f", axis_string(), P_limit);
             }
         }
     } else if (ff_count < 4) {
         // we don't have a good FF estimate yet, keep going
-        
+
     } else if (!is_positive(D_limit)) {
         /* we haven't detected D oscillation yet, keep raising D */
         D *= 1.3;
@@ -376,7 +411,7 @@ void AP_AutoTune::update(AP_Logger::PID_Info &pinfo, float scaler, float angle_e
         // have done 3 cycles without reducing P
         if (done_count < 3) {
             if (++done_count == 3) {
-                GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%s: Finished", type==AUTOTUNE_ROLL?"Roll":"Pitch");
+                GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%s: Finished", axis_string());
                 save_gains();
             }
         }
@@ -385,12 +420,24 @@ void AP_AutoTune::update(AP_Logger::PID_Info &pinfo, float scaler, float angle_e
     rpid.ff().set(FF);
     rpid.kP().set(P);
     rpid.kD().set(D);
-    rpid.kI().set(MAX(P*AUTOTUNE_I_RATIO, (FF / TRIM_TCONST)));
+    if (type == AUTOTUNE_ROLL) {  // for roll set I = smaller of FF or P
+        rpid.kI().set(MIN(P, (FF / TRIM_TCONST)));
+    } else {                      // for pitch/yaw naturally damped axes) set I usually = FF to get 1 sec I closure
+        rpid.kI().set(MAX(P*AUTOTUNE_I_RATIO, (FF / TRIM_TCONST)));
+    }
 
     // setup filters to be suitable for time constant and gyro filter
-    rpid.filt_T_hz().set(10.0/(current.tau * 2 * M_PI));
+    // filtering T can  prevent P/D oscillation being seen, so allow the
+    // user to switch it off
+    if (!has_option(DISABLE_FLTT_UPDATE)) {
+        rpid.filt_T_hz().set(10.0/(current.tau * 2 * M_PI));
+    }
     rpid.filt_E_hz().set(0);
-    rpid.filt_D_hz().set(AP::ins().get_gyro_filter_hz()*0.5);
+    // filtering D at the same level as VTOL can allow unwanted oscillations to be seen,
+    // so allow the user to switch it off and select their own (usually lower) value
+    if (!has_option(DISABLE_FLTD_UPDATE)) {
+        rpid.filt_D_hz().set(AP::ins().get_gyro_filter_hz()*0.5);
+    }
 
     current.FF = FF;
     current.P = P;
@@ -512,7 +559,7 @@ void AP_AutoTune::update_rmax(void)
 
     if (level == 0) {
         // this level means to keep current values of RMAX and TCONST
-        target_rmax = constrain_float(current.rmax_pos, 75, 720);
+        target_rmax = constrain_float(current.rmax_pos, 20, 720);
         target_tau = constrain_float(current.tau, 0.1, 2);
     } else {
         target_rmax = tuning_table[level-1].rmax;

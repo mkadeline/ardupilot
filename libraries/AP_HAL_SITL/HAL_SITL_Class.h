@@ -35,13 +35,21 @@ public:
     }
     bool get_wipe_storage() const { return wipe_storage; }
 
+    uint8_t get_instance() const;
+
+#if defined(HAL_BUILD_AP_PERIPH)
+    bool run_in_maintenance_mode() const;
+#endif
+
+    uint32_t get_uart_output_full_queue_count() const;
+
 private:
     HALSITL::SITL_State *_sitl_state;
 
     void setup_signal_handlers() const;
     static void exit_signal_handler(int);
 
-    bool storage_posix_enabled;
+    bool storage_posix_enabled = true;
     bool storage_flash_enabled;
     bool storage_fram_enabled;
 

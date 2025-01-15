@@ -35,8 +35,7 @@ Scrimmage::Scrimmage(const char *_frame_str) :
     Aircraft(_frame_str),
     prev_timestamp_us(0),
     recv_sock(true),
-    send_sock(true),
-    frame_str(_frame_str)
+    send_sock(true)
 {
 }
 
@@ -107,7 +106,7 @@ void Scrimmage::recv_fdm(const struct sitl_input &input)
 
 
     // velocity relative to air mass, in earth frame TODO
-    velocity_air_ef = velocity_ef;
+    velocity_air_ef = velocity_ef - wind_ef;
 
     // velocity relative to airmass in body frame TODO
     velocity_air_bf = dcm.transposed() * velocity_air_ef;
